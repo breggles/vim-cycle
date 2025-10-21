@@ -4,6 +4,8 @@ var state = {
       winid: 0,
       idx: 0,
       buffers: [],
+      preview: 0,
+      targetwin: 0,
 }
 
 def IsDialogOpen(): bool
@@ -20,6 +22,16 @@ def CloseDialog()
   state.winid = 0
   state.idx = 0
   state.buffers = []
+  state.targetwin = 0
+enddef
+
+def CancelDialog()
+  var original = state.buffers[0].bufnr
+  var win = state.targetwin
+  CloseDialog()
+  if win > 0 && winbufnr(win) != -1 && winbufnr(win) != original
+    win_execute(win, printf('buffer %d', original))
+  endif
 enddef
 
 def GetBuffers(): list<dict<any>>
@@ -49,6 +61,54 @@ def SetInitialIndex(buffers: list<dict<any>>)
     endfor
   endif
   state.idx = len(buffers) > 1 ? 1 : 0
+enddef
+
+def EnsurePreviewBuffer()
+  if state.preview == 0 || !bufexists(state.preview)
+    state.preview = bufadd('Buffer Ring Preview')
+  endif
+  bufload(state.preview)
+  setbufvar(state.preview, '&buflisted', 0)
+  setbufvar(state.preview, '&buftype', 'nofile')
+  setbufvar(state.preview, '&swapfile', 0)
+  setbufvar(state.preview, '&bufhidden', 'hide')
+  setbufvar(state.preview, '&undolevels', -1)
+  setbufvar(state.preview, '&modifiable', 0)
+  setbufvar(state.preview, '&readonly', 1)
+enddef
+
+def ShowCurrentSelection()
+  if state.targetwin == 0
+    return
+  endif
+  EnsurePreviewBuffer()
+  var win = state.targetwin
+  if win > 0 && winbufnr(win) != state.preview
+    win_execute(win, printf('noautocmd buffer %d', state.preview))
+  endif
+  var target = state.buffers[state.idx]
+  bufload(target.bufnr)
+  var lines = getbufline(target.bufnr, 1, '$')
+  if empty(lines)
+    lines = ['']
+  endif
+  setbufvar(state.preview, '&modifiable', 1)
+  setbufvar(state.preview, '&readonly', 0)
+  if !empty(getbufline(state.preview, 1, '$'))
+    deletebufline(state.preview, 1, '$')
+  endif
+  setbufline(state.preview, 1, lines)
+  setbufvar(state.preview, '&modified', 0)
+  setbufvar(state.preview, '&modifiable', 0)
+  setbufvar(state.preview, '&readonly', 1)
+  setbufvar(state.preview, '&filetype', getbufvar(target.bufnr, '&filetype'))
+  var syntax = getbufvar(target.bufnr, '&syntax')
+  if type(syntax) == v:t_string
+    setbufvar(state.preview, '&syntax', syntax)
+  endif
+  var lnum = has_key(target, 'lnum') && target.lnum > 0 ? target.lnum : 1
+  var col = has_key(target, 'col') && target.col > 0 ? target.col : 1
+  win_execute(state.targetwin, printf('call cursor(%d, %d)', lnum, col))
 enddef
 
 def BuildLines(): list<string>
@@ -87,8 +147,16 @@ def OpenDialog()
     echohl None
     return
   endif
+  state.targetwin = win_getid()
   state.buffers = buffers
   SetInitialIndex(buffers)
+  EnsurePreviewBuffer()
+  if state.targetwin > 0 && bufexists(state.preview)
+    if winbufnr(state.targetwin) != state.preview
+      win_execute(state.targetwin, printf('noautocmd buffer %d', state.preview))
+    endif
+  endif
+  ShowCurrentSelection()
   var content = BuildLines()
   if IsDialogOpen()
     popup_settext(state.winid, content)
@@ -120,14 +188,12 @@ def Cycle(delta: number)
     echohl None
     return
   endif
-  if empty(state.buffers)
-    return
-  endif
   var count = len(state.buffers)
   state.idx = (state.idx + delta) % count
   if state.idx < 0
     state.idx += count
   endif
+  ShowCurrentSelection()
   UpdateLines()
 enddef
 
@@ -138,13 +204,12 @@ def OpenSelected()
     echohl None
     return
   endif
-  if empty(state.buffers)
-    CloseDialog()
-    return
-  endif
   var target = state.buffers[state.idx]
+  var win = state.targetwin
   CloseDialog()
-  execute($'buffer {target.bufnr}')
+  if win > 0 && winbufnr(win) != -1 && winbufnr(win) != target.bufnr
+    win_execute(win, printf('buffer %d', target.bufnr))
+  endif
 enddef
 
 def CycleFilter(id: number, key: string): bool
@@ -152,7 +217,7 @@ def CycleFilter(id: number, key: string): bool
     return false
   endif
   if key ==# "\<Esc>" || key ==# "\<C-[>" || key ==# "\<C-c>"
-    CloseDialog()
+    CancelDialog()
     return true
   endif
   if key ==# "\<CR>" || key ==# "\<Space>"
