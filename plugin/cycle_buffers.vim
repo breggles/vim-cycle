@@ -40,17 +40,15 @@ enddef
 
 def SetInitialIndex(buffers: list<dict<any>>)
   var alt = bufnr('#')
-  if alt <= 0
-    state.idx = 0
-    return
+  if alt > 0
+    for idx in range(len(buffers))
+      if buffers[idx].bufnr == alt
+        state.idx = idx
+        return
+      endif
+    endfor
   endif
-  for idx in range(len(buffers))
-    if buffers[idx].bufnr == alt
-      state.idx = idx
-      return
-    endif
-  endfor
-  state.idx = 0
+  state.idx = len(buffers) > 1 ? 1 : 0
 enddef
 
 def BuildLines(): list<string>
